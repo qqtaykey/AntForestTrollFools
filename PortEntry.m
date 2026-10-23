@@ -61,9 +61,10 @@ static BOOL isEnergyRainURL(NSURL *url) {
 static BOOL isForestHomeURL(NSURL *url) {
     if (!url) return NO;
     if (isEnergyRainURL(url)) return NO;
-    NSString *str = url.absoluteString ?: @"";
-    if ([str containsString:@"exchange.html"] || [str containsString:@"listRank.html"] || [str containsString:@"cert.html"]) return NO;
-    return [str containsString:@"180020010001247580"] || ([str containsString:@"60000002"] && [str containsString:@"home.html"]);
+    NSString *str = [url.absoluteString lowercaseString] ?: @"";
+    if ([str containsString:@"exchange.html"] || [str containsString:@"listrank.html"] || [str containsString:@"cert.html"]) return NO;
+    if ([str containsString:@"pk"] || [str containsString:@"challenge"] || [str containsString:@"pvp"] || [str containsString:@"arena"] || [str containsString:@"rank"]) return NO;
+    return ([str containsString:@"180020010001247580"] && [str containsString:@"home.html"]) || ([str containsString:@"60000002"] && [str containsString:@"home.html"]);
 }
 
 static BOOL isSelfForestHomeURL(NSURL *url) {
@@ -81,7 +82,19 @@ static BOOL isSelfForestHomeURL(NSURL *url) {
 
 static BOOL isEarnEnergyURL(NSURL *url) {
     NSString *text = [url.absoluteString lowercaseString];
-    return [text containsString:@"forcewhackmole=y"] || [text containsString:@"whackmole"] || [text containsString:@"earnenergy"] || [text containsString:@"earn_energy"] || [text containsString:@"earn.html"] || [text containsString:@"60000002.h5app.alipay.com"];
+    return [text containsString:@"forcewhackmole=y"] || [text containsString:@"whackmole"] || [text containsString:@"earnenergy"] || [text containsString:@"earn_energy"] || [text containsString:@"earn.html"];
+}
+
+static BOOL isPkOrChallengeURL(NSURL *url) {
+    if (!url) return NO;
+    NSString *text = [url.absoluteString lowercaseString];
+    return [text containsString:@"pvphome"] ||
+           [text containsString:@"pvprecord"] ||
+           [text containsString:@"pkcontest"] ||
+           [text containsString:@"pkfind"] ||
+           [text containsString:@"pkrank"] ||
+           [text containsString:@"challenge"] ||
+           [text containsString:@"arena"];
 }
 
 static BOOL isLotteryURL(NSURL *url) {
@@ -120,6 +133,7 @@ static BOOL isFarmURL(NSURL *url) {
     if (!url) return NO;
     if ([AntForestManager isManorURL:url]) return NO;
     NSString *text = [url.absoluteString lowercaseString];
+    if ([text containsString:@"66666674"] || [text containsString:@"2017090512380701"] || [text containsString:@"antfarm"] || [text containsString:@"ant_farm"]) return NO;
     return [text containsString:@"alipayfarm"] ||
            [text containsString:@"tmfarm"] ||
            [text containsString:@"babafarm"] ||
@@ -149,23 +163,142 @@ static id rewardBridgeFromController(id controller) {
     return nil;
 }
 
+static BOOL isForestBridgeAlive(id bridge) {
+    if (!bridge) return NO;
+    @try {
+        if ([bridge respondsToSelector:@selector(contentView)]) {
+            id cv = ((id (*)(id, SEL))objc_msgSend)(bridge, @selector(contentView));
+            if (!cv) return NO;
+            if ([cv respondsToSelector:@selector(webView)]) {
+                id wv = ((id (*)(id, SEL))objc_msgSend)(cv, @selector(webView));
+                if (!wv) return NO;
+            }
+        }
+        return YES;
+    } @catch (__unused NSException *e) {
+        return NO;
+    }
+}
+
 static id forestBridgeFromController(id controller) {
-    for (NSString *name in @[@"jsBridge", @"bridge"]) {
+    if (!controller) return nil;
+    NSMutableArray *objects = [NSMutableArray arrayWithObject:controller];
+    for (NSString *name in @[ @"contentView", @"rvkContentView" ]) {
         SEL selector = NSSelectorFromString(name);
-        if (![controller respondsToSelector:selector]) continue;
-        id bridge = ((id (*)(id, SEL))objc_msgSend)(controller, selector);
-        if ([bridge isKindOfClass:NSClassFromString(@"PSDJsBridge")]) return bridge;
+        if ([controller respondsToSelector:selector]) {
+            id contentView = ((id (*)(id, SEL))objc_msgSend)(controller, selector);
+            if (contentView) [objects addObject:contentView];
+        }
+    }
+    for (id object in objects) {
+        for (NSString *name in @[@"jsBridge", @"bridge"]) {
+            SEL selector = NSSelectorFromString(name);
+            if (![object respondsToSelector:selector]) continue;
+            id bridge = ((id (*)(id, SEL))objc_msgSend)(object, selector);
+            if ([bridge isKindOfClass:NSClassFromString(@"PSDJsBridge")]) {
+                if (isForestBridgeAlive(bridge)) return bridge;
+            }
+        }
     }
     return nil;
+}
+
+static __weak id currentForestHomeController = nil;
+
+static id forestControllerForBridge(id bridge) {
+    id contentView = [bridge respondsToSelector:@selector(contentView)] ? ((id (*)(id, SEL))objc_msgSend)(bridge, @selector(contentView)) : nil;
+    for (NSString *name in @[ @"rvkViewController", @"psdViewController" ]) {
+        SEL selector = NSSelectorFromString(name);
+        if ([contentView respondsToSelector:selector]) return ((id (*)(id, SEL))objc_msgSend)(contentView, selector);
+    }
+    return nil;
+}
+
+static id findAnyForestController(void) {
+    if (currentForestHomeController) {
+        NSURL *curUrl = [currentForestHomeController respondsToSelector:@selector(url)] ? ((NSURL *(*)(id, SEL))objc_msgSend)(currentForestHomeController, @selector(url)) : nil;
+        if (!curUrl || isSelfForestHomeURL(curUrl)) {
+            return currentForestHomeController;
+        }
+    }
+    AntForestManager *manager = AntForestManager.sharedInstance;
+    if (manager.jsBridge && isForestBridgeAlive(manager.jsBridge)) {
+        id c = forestControllerForBridge(manager.jsBridge);
+        if (c) {
+            NSURL *u = [c respondsToSelector:@selector(url)] ? ((NSURL *(*)(id, SEL))objc_msgSend)(c, @selector(url)) : nil;
+            if (!u || isSelfForestHomeURL(u)) return c;
+        }
+    }
+    NSArray *windows = nil;
+    if ([UIApplication.sharedApplication respondsToSelector:@selector(windows)]) {
+        windows = [UIApplication.sharedApplication windows];
+    }
+    for (UIWindow *w in windows) {
+        UIViewController *root = w.rootViewController;
+        if (!root) continue;
+        NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
+        while (queue.count) {
+            UIViewController *vc = queue.firstObject;
+            [queue removeObjectAtIndex:0];
+            if (!vc) continue;
+            NSURL *url = [vc respondsToSelector:@selector(url)] ? ((NSURL *(*)(id, SEL))objc_msgSend)(vc, @selector(url)) : nil;
+            if (url && isSelfForestHomeURL(url)) return vc;
+            if (vc.presentedViewController) [queue addObject:vc.presentedViewController];
+            if ([vc isKindOfClass:[UINavigationController class]]) {
+                [queue addObjectsFromArray:[(UINavigationController *)vc viewControllers]];
+            }
+            if ([vc isKindOfClass:[UITabBarController class]]) {
+                [queue addObjectsFromArray:[(UITabBarController *)vc viewControllers]];
+            }
+            [queue addObjectsFromArray:vc.childViewControllers];
+        }
+    }
+    return nil;
+}
+
+static void startSilentRewardContext(id forestController);
+
+static void probeAndRestoreForestBridge(void) {
+    static BOOL sIsProbingForestBridge = NO;
+    if (sIsProbingForestBridge) return;
+    sIsProbingForestBridge = YES;
+    @try {
+        AntForestManager *manager = AntForestManager.sharedInstance;
+        // 检查当前绑定的森林首页 bridge 是否仍然存活（真后台下 WebProcess 崩溃或释放后自动重构）
+        if (manager.jsBridge && !isForestBridgeAlive(manager.jsBridge)) {
+            manager.jsBridge = nil;
+            [manager recordStage:@"诊断 · 检测到森林首页 Bridge 已失效/脱落，正在自动重新探针绑定"];
+        }
+        id controller = findAnyForestController();
+        if (controller) {
+            id bridge = forestBridgeFromController(controller) ?: rewardBridgeFromController(controller);
+            if (bridge && !manager.jsBridge) {
+                manager.jsBridge = bridge;
+                [manager recordStage:@"诊断 · 后台探针绑定森林首页 H5 Bridge"];
+            }
+            if (manager.rewardTaskBridge && manager.rewardTaskBridge != manager.jsBridge) {
+                NSString *rtUrlStr = [manager effectiveUrlForBridge:manager.rewardTaskBridge];
+                NSURL *rtUrl = rtUrlStr.length ? [NSURL URLWithString:rtUrlStr] : nil;
+                if (!isForestBridgeAlive(manager.rewardTaskBridge) || (rtUrl && isPkOrChallengeURL(rtUrl))) {
+                    manager.rewardTaskBridge = manager.jsBridge;
+                }
+            }
+            if (!manager.rewardTaskBridge && manager.jsBridge) {
+                manager.rewardTaskBridge = manager.jsBridge;
+            }
+            if (!manager.rewardTaskBridge) {
+                startSilentRewardContext(controller);
+            }
+        }
+    } @finally {
+        sIsProbingForestBridge = NO;
+    }
 }
 
 static void startSilentRewardContext(id forestController) {
     AntForestManager *manager = AntForestManager.sharedInstance;
     if (!manager.enableAutoRewardTasks) return;
-    if (manager.rewardTaskBridge) {
-        [manager queryVitalityTaskList];
-        return;
-    }
+    if (manager.rewardTaskBridge) return;
     id session = nil;
     for (NSString *name in @[ @"rvkSession", @"session" ]) {
         SEL selector = NSSelectorFromString(name);
@@ -183,17 +316,10 @@ static void startSilentRewardContext(id forestController) {
     if (bridge) {
         manager.rewardTaskBridge = bridge;
         [manager recordStage:@"首页后台：后台会话奖励桥接已就绪"];
-        [manager queryVitalityTaskList];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [manager queryVitalityTaskList];
+        });
     }
-}
-
-static id forestControllerForBridge(id bridge) {
-    id contentView = [bridge respondsToSelector:@selector(contentView)] ? ((id (*)(id, SEL))objc_msgSend)(bridge, @selector(contentView)) : nil;
-    for (NSString *name in @[ @"rvkViewController", @"psdViewController" ]) {
-        SEL selector = NSSelectorFromString(name);
-        if ([contentView respondsToSelector:selector]) return ((id (*)(id, SEL))objc_msgSend)(contentView, selector);
-    }
-    return nil;
 }
 
 static void finishForestHomeStart(id controller, id bridge) {
@@ -209,8 +335,12 @@ static void finishForestHomeStart(id controller, id bridge) {
             [manager recordStage:@"诊断 · 首页桥接就绪：前一轮扫描执行中，跳过重复启动"];
             return;
         }
-        [manager recordStage:@"收取 · 首页桥接就绪，立即补跑"];
-        [manager autoCollectBubbles];
+        [manager recordStage:@"收取 · 首页桥接就绪，平滑延迟启动好友扫描"];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+            if (manager.enableAutoCollect && !manager.isScanRunning && manager.jsBridge) {
+                [manager autoCollectBubbles];
+            }
+        });
     }
 }
 
@@ -241,23 +371,98 @@ static void startForestHomeWhenBridgeReady(id controller) {
     waitForBridge();
 }
 
+static inline BOOL isStrictPkOperationName(NSString *opType) {
+    if (!opType.length) return NO;
+    NSString *lower = [opType lowercaseString];
+    if ([lower containsString:@"energychallenge"] ||
+        [lower containsString:@"challengerank"] ||
+        [lower containsString:@"pvphome"] ||
+        [lower containsString:@"energypvp"] ||
+        [lower containsString:@"matchpvp"] ||
+        [lower containsString:@"filluserrobflag"]) {
+        return YES;
+    }
+    if ([lower hasSuffix:@".pk"] || [lower containsString:@".pk."] || [lower containsString:@"pkhome"]) {
+        return YES;
+    }
+    return NO;
+}
+
+static BOOL isPkOrPvpOrLeaderboardResponse(id value) {
+    if (![value isKindOfClass:NSDictionary.class]) return NO;
+    NSDictionary *dict = (NSDictionary *)value;
+    NSDictionary *resData = [dict[@"resData"] isKindOfClass:NSDictionary.class] ? dict[@"resData"] : dict;
+    
+    // 领奖励/活力/海洋任务等普通任务列表绝对不是 PK 榜
+    if (resData[@"taskInfoList"] || dict[@"taskInfoList"] || resData[@"taskList"] || dict[@"taskList"] ||
+        resData[@"antOceanTaskVOList"] || dict[@"antOceanTaskVOList"] || resData[@"signModel"] || dict[@"signModel"]) {
+        return NO;
+    }
+    
+    NSString *opType = [NSString stringWithFormat:@"%@", dict[@"operationType"] ?: (resData[@"operationType"] ?: @"")];
+    if (isStrictPkOperationName(opType)) {
+        return YES;
+    }
+    
+    if (resData[@"combineHandlerVOMap"][@"energyPvpInfo"] || dict[@"combineHandlerVOMap"][@"energyPvpInfo"]) return YES;
+    if (resData[@"combineHandlerVOMap"][@"energyChallengeRank"] || dict[@"combineHandlerVOMap"][@"energyChallengeRank"]) return YES;
+    if (resData[@"energyPvpInfo"] || dict[@"energyPvpInfo"]) return YES;
+    if (resData[@"energyChallengeRank"] || dict[@"energyChallengeRank"]) return YES;
+    if (resData[@"rankDisplayParamsVO"] || dict[@"rankDisplayParamsVO"]) return YES;
+    if (resData[@"dynamicPromoteVO"] || dict[@"dynamicPromoteVO"]) return YES;
+    if (resData[@"promoteLineEnergy"] || dict[@"promoteLineEnergy"]) return YES;
+    if (resData[@"nextRankLevelName"] || dict[@"nextRankLevelName"]) return YES;
+    if (resData[@"promoteCount"] || dict[@"promoteCount"]) return YES;
+    if (resData[@"extendInfo"][@"rankHeadPortraitVOS"] || dict[@"extendInfo"][@"rankHeadPortraitVOS"]) return YES;
+    if (resData[@"rankHeadPortraitVOS"] || dict[@"rankHeadPortraitVOS"]) return YES;
+    if (resData[@"userPkInfo"] || dict[@"userPkInfo"]) return YES;
+    if (resData[@"pkRanking"] || dict[@"pkRanking"]) return YES;
+    if (resData[@"pkRankList"] || dict[@"pkRankList"]) return YES;
+    if (resData[@"pkDatas"] || dict[@"pkDatas"]) return YES;
+    if (resData[@"currentSeasonInfo"] || dict[@"currentSeasonInfo"]) return YES;
+    if (resData[@"seasonInfo"] || dict[@"seasonInfo"]) return YES;
+    if (resData[@"challengeRank"] || dict[@"challengeRank"]) return YES;
+    if (resData[@"pkTaskList"] || dict[@"pkTaskList"]) return YES;
+    if (resData[@"pkTasks"] || dict[@"pkTasks"]) return YES;
+    if (resData[@"friendRanking"] || dict[@"friendRanking"]) return YES;
+    if (resData[@"totalDatas"] || dict[@"totalDatas"]) return YES;
+    if (resData[@"totalData"] || dict[@"totalData"]) return YES;
+    if (resData[@"myself"] && [resData[@"myself"][@"rank"] integerValue] > 0 && !resData[@"bubbles"] && !resData[@"wateringBubbles"] && !resData[@"userBaseInfo"]) return YES;
+    
+    return NO;
+}
+
 static BOOL isForestResponse(id value) {
     if (![value isKindOfClass:NSDictionary.class]) return NO;
     NSDictionary *response = value;
     NSDictionary *data = [response[@"resData"] isKindOfClass:NSDictionary.class] ? response[@"resData"] : nil;
     BOOL hasBubbles = (response[@"bubbles"] || response[@"wateringBubbles"] || data[@"bubbles"] || data[@"wateringBubbles"]);
     BOOL hasUser = (response[@"userBaseInfo"] || response[@"loginUserBaseInfo"] || response[@"userEnergy"] || data[@"userBaseInfo"] || data[@"loginUserBaseInfo"] || data[@"userEnergy"] || data[@"combineHandlerVOMap"]);
-    return (hasBubbles && hasUser) || data[@"totalDatas"] || data[@"friendRanking"] || data[@"myself"] || data[@"friendId"] || data[@"combineHandlerVOMap"];
+    BOOL isPkOrSeason = isPkOrPvpOrLeaderboardResponse(value);
+    return (hasBubbles && hasUser) || data[@"totalDatas"] || data[@"friendRanking"] || data[@"myself"] || data[@"friendId"] || data[@"combineHandlerVOMap"] || isPkOrSeason;
 }
 
 static BOOL isMyHomeResponse(id value, AntForestManager *manager) {
     NSDictionary *response = [value isKindOfClass:NSDictionary.class] ? value : nil;
     if (!response) return NO;
     NSDictionary *resData = [response[@"resData"] isKindOfClass:NSDictionary.class] ? response[@"resData"] : response;
-    if (response[@"loginUserBaseInfo"] && !response[@"userBaseInfo"]) return YES;
-    NSDictionary *base = [response[@"loginUserBaseInfo"] isKindOfClass:NSDictionary.class] ? response[@"loginUserBaseInfo"] :
-                         ([response[@"userBaseInfo"] isKindOfClass:NSDictionary.class] ? response[@"userBaseInfo"] :
+    
+    // 1. 严禁将 PK 榜、排行榜、赛季、擂台等回包误判为本人森林首页
+    if (isPkOrPvpOrLeaderboardResponse(value)) return NO;
+    
+    // 2. 好友森林页面绝对不是本人森林首页
+    if ([resData[@"nextAction"] isEqualToString:@"Friend"] || [response[@"nextAction"] isEqualToString:@"Friend"]) return NO;
+    
+    // 3. 必须具备森林首页专属特征（如 userEnergy、或挂在主树上的气泡）
+    BOOL hasHomeFeatures = (resData[@"userEnergy"] != nil || response[@"userEnergy"] != nil ||
+                            resData[@"bubbles"] != nil || response[@"bubbles"] != nil ||
+                            resData[@"wateringBubbles"] != nil || response[@"wateringBubbles"] != nil);
+    if (!hasHomeFeatures) return NO;
+    
+    // 4. 严格校验本人 UID
+    NSDictionary *base = [response[@"userBaseInfo"] isKindOfClass:NSDictionary.class] ? response[@"userBaseInfo"] :
                          ([resData[@"userBaseInfo"] isKindOfClass:NSDictionary.class] ? resData[@"userBaseInfo"] :
+                         ([response[@"loginUserBaseInfo"] isKindOfClass:NSDictionary.class] ? response[@"loginUserBaseInfo"] :
                          ([resData[@"combineHandlerVOMap"][@"userInfo"][@"userBaseInfo"] isKindOfClass:NSDictionary.class] ? resData[@"combineHandlerVOMap"][@"userInfo"][@"userBaseInfo"] : nil)));
     return manager.myUserId.length && [base[@"userId"] isEqualToString:manager.myUserId];
 }
@@ -416,8 +621,6 @@ static void simulateNativeTapOnView(UIView *view, CGPoint point) {
         } @catch (NSException *e) {}
     });
 }
-
-static __weak id currentForestHomeController = nil;
 
 static void dismissFriendAnimalPopup(id controller) {
     if (!controller) return;
@@ -683,6 +886,7 @@ static void installEarnEnergyCollector(id controller) {
 @end
 
 @interface AntForestSettingsPanel : UIViewController
+@property (nonatomic, strong) UIButton *rewardButton;
 @end
 
 @interface AntForestWaterPanel : UIViewController <UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating>
@@ -1328,7 +1532,10 @@ static void installEarnEnergyCollector(id controller) {
     UISwitch *oceanSwitch = [[UISwitch alloc] init]; oceanSwitch.on = AntForestManager.sharedInstance.enableCleanOcean; oceanSwitch.translatesAutoresizingMaskIntoConstraints = NO; [oceanSwitch addTarget:self action:@selector(toggleCleanOcean:) forControlEvents:UIControlEventValueChanged]; [ocean addSubview:oceanSwitch];
     UIButton *oceanTasks = [self settingsButtonWithTitle:@"神奇海洋（自动任务）" detail:@"自动完成海洋日常任务与拼图领奖" icon:@"sparkles.rectangle.stack.fill" action:nil];
     UISwitch *oceanTasksSwitch = [[UISwitch alloc] init]; oceanTasksSwitch.on = AntForestManager.sharedInstance.enableAutoOceanTasks; oceanTasksSwitch.translatesAutoresizingMaskIntoConstraints = NO; [oceanTasksSwitch addTarget:self action:@selector(toggleAutoOceanTasks:) forControlEvents:UIControlEventValueChanged]; [oceanTasks addSubview:oceanTasksSwitch];
-    UIButton *reward = [self settingsButtonWithTitle:@"领奖励 & 森林寻宝" detail:@"自动浏览任务、奖励领取、森林寻宝需手动进入才能触发自动浏览任务。" icon:@"gift.fill" action:nil];
+    NSString *currentRewardStartTime = AntForestManager.sharedInstance.rewardTaskStartTime ?: @"07:00";
+    NSString *rewardDetail = [NSString stringWithFormat:@"每日 %@ 开启任务（点击修改时刻）；自动浏览任务与奖励领取。", currentRewardStartTime];
+    UIButton *reward = [self settingsButtonWithTitle:@"领奖励 & 森林寻宝" detail:rewardDetail icon:@"gift.fill" action:@selector(showRewardTimePicker)];
+    self.rewardButton = reward;
     UISwitch *rewardSwitch = [[UISwitch alloc] init]; rewardSwitch.on = AntForestManager.sharedInstance.enableAutoRewardTasks; rewardSwitch.translatesAutoresizingMaskIntoConstraints = NO; [rewardSwitch addTarget:self action:@selector(toggleAutoRewardTasks:) forControlEvents:UIControlEventValueChanged]; [reward addSubview:rewardSwitch];
     
     UIButton *aiFish = [self settingsButtonWithTitle:@"AI摸鱼（任务与机会）" detail:@"手动进入AI摸鱼自动完成奖励任务并领取" icon:@"fish.fill" action:nil];
@@ -1382,6 +1589,7 @@ static void installEarnEnergyCollector(id controller) {
     UIImageView *image = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:icon]]; image.tintColor = [UIColor colorWithRed:0.07 green:0.31 blue:0.18 alpha:1.0]; image.translatesAutoresizingMaskIntoConstraints = NO;
     UILabel *titleLabel = [[UILabel alloc] init]; titleLabel.text = title; titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold]; titleLabel.textColor = UIColor.labelColor; titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     UILabel *detailLabel = [[UILabel alloc] init]; detailLabel.text = detail; detailLabel.font = [UIFont systemFontOfSize:11]; detailLabel.textColor = UIColor.secondaryLabelColor; detailLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    detailLabel.tag = 1002;
     detailLabel.numberOfLines = 2;
     detailLabel.adjustsFontSizeToFitWidth = YES;
     detailLabel.minimumScaleFactor = 0.75;
@@ -1401,6 +1609,45 @@ static void installEarnEnergyCollector(id controller) {
 - (void)showSchedule { [self.navigationController pushViewController:[[AntForestSchedulePanel alloc] init] animated:YES]; }
 - (void)showStepSimulator { [self.navigationController pushViewController:[[AntForestStepSimulatorPanel alloc] init] animated:YES]; }
 - (void)showWater { [self.navigationController pushViewController:[[AntForestWaterPanel alloc] init] animated:YES]; }
+- (void)updateRewardButtonDetail {
+    if (!self.rewardButton) return;
+    UILabel *detailLabel = (UILabel *)[self.rewardButton viewWithTag:1002];
+    if (detailLabel) {
+        NSString *currentRewardStartTime = AntForestManager.sharedInstance.rewardTaskStartTime ?: @"07:00";
+        detailLabel.text = [NSString stringWithFormat:@"每日 %@ 开启任务（点击修改时刻）；自动浏览任务与奖励领取。", currentRewardStartTime];
+    }
+}
+- (void)showRewardTimePicker {
+    NSString *currentTime = AntForestManager.sharedInstance.rewardTaskStartTime ?: @"07:00";
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.dateFormat = @"HH:mm";
+    NSDate *currentDate = [formatter dateFromString:currentTime] ?: [formatter dateFromString:@"07:00"] ?: [NSDate date];
+    
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"设置任务开始时间"
+                                                                   message:@"请选择每日开始执行领奖励等日常任务的时间（默认 07:00）"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    UIViewController *vc = [[UIViewController alloc] init];
+    vc.preferredContentSize = CGSizeMake(270, 160);
+    UIDatePicker *picker = [[UIDatePicker alloc] initWithFrame:CGRectMake(0, 0, 270, 160)];
+    picker.datePickerMode = UIDatePickerModeTime;
+    if (@available(iOS 13.4, *)) {
+        picker.preferredDatePickerStyle = UIDatePickerStyleWheels;
+    }
+    picker.date = currentDate;
+    [vc.view addSubview:picker];
+    [alert setValue:vc forKey:@"contentViewController"];
+    
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存设置" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        NSString *newTime = [formatter stringFromDate:picker.date];
+        AntForestManager.sharedInstance.rewardTaskStartTime = newTime;
+        [NSUserDefaults.standardUserDefaults setObject:newTime forKey:@"rewardTaskStartTime"];
+        [AntForestManager.sharedInstance recordStage:[NSString stringWithFormat:@"领奖励 · 任务每日开始时间已设置为 %@", newTime]];
+        [weakSelf updateRewardButtonDetail];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
 - (void)toggleAutoRevive:(UISwitch *)sender { AntForestManager.sharedInstance.enableAutoRevive = sender.on; [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"enableAutoRevive"]; [AntForestManager.sharedInstance recordStage:[NSString stringWithFormat:@"复活能量 · 功能已%@", sender.on ? @"开启" : @"关闭"]]; }
 - (void)toggleAutoEarn:(UISwitch *)sender { AntForestManager.sharedInstance.enableAutoEarn = sender.on; [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"enableAutoEarn"]; [AntForestManager.sharedInstance recordStage:[NSString stringWithFormat:@"打地鼠 · 功能已%@", sender.on ? @"开启" : @"关闭"]]; }
 - (void)toggleCleanOcean:(UISwitch *)sender { AntForestManager.sharedInstance.enableCleanOcean = sender.on; [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"enableCleanOcean"]; [AntForestManager.sharedInstance recordStage:[NSString stringWithFormat:@"神奇海洋 · 自动清理已%@", sender.on ? @"开启" : @"关闭"]]; }
@@ -1590,7 +1837,7 @@ static void installEarnEnergyCollector(id controller) {
 
     [self.view addSubview:grabber];
     UILabel *versionLabel = [[UILabel alloc] init];
-    versionLabel.text = @"当前版本：v3.1 正式版";
+    versionLabel.text = @"当前版本：v3.2.7 正式版";
     versionLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
     versionLabel.textColor = [UIColor systemGray2Color];
     versionLabel.textAlignment = NSTextAlignmentCenter;
@@ -1850,8 +2097,9 @@ static void installEarnEnergyCollector(id controller) {
         return log.length > 0 && ![log containsString:@"[Diag]"] && ![log containsString:@"诊断 ·"];
     }];
     NSArray *records = [logs filteredArrayUsingPredicate:predicate];
+    NSString *rewardDesc = manager.enableAutoRewardTasks ? [NSString stringWithFormat:@"开（每日 %@）", manager.rewardTaskStartTime ?: @"07:00"] : @"关";
     NSString *header = [NSString stringWithFormat:@"AntForestPort-Ocean 收取日志\n导出时间：%@\n配置：自动收取=%@，收取自己=%@，自动能量雨=%@，赚能量（打地鼠玩法）=%@，神奇海洋清理=%@，神奇海洋任务=%@，领奖励与森林寻宝=%@，AI摸鱼=%@，芭芭农场做任务集肥料=%@，蚂蚁庄园=%@，新版保护地（大富翁）=%@，自动复活好友过期能量=%@，后台循环=%@，循环间隔=%ld 秒，定时收取=%@，打开蚂蚁森林自动浇水=%@，定时自动浇水=%@（%ld g，%lu 位好友），步数模拟=%@\n统计：今日=%ld g，累计=%ld g，日志条目=%lu\n\n",
-                      getCurrentDateTimeString(), manager.enableAutoCollect ? @"开" : @"关", manager.enableSelfCollect ? @"开" : @"关", manager.enableAutoRain ? @"开" : @"关", manager.enableAutoEarn ? @"开" : @"关", manager.enableCleanOcean ? @"开" : @"关", manager.enableAutoOceanTasks ? @"开" : @"关", manager.enableAutoRewardTasks ? @"开" : @"关", manager.enableAutoAIFish ? @"开" : @"关", manager.enableAutoFarmTasks ? @"开" : @"关", manager.enableAutoManor ? @"开" : @"关", manager.enableAutoPatrolNew ? @"开" : @"关", manager.enableAutoRevive ? @"开" : @"关", manager.enableBackgroundLoop ? @"开" : @"关", (long)manager.collectInterval, manager.enableScheduledCollect ? @"开" : @"关", manager.enableWaterOnLaunch ? @"开" : @"关", manager.enableAutoWater ? @"开" : @"关", (long)manager.waterGrams, (unsigned long)manager.waterFriendIds.count, AFStepSimulator.shared.enabled ? @"开" : @"关", (long)manager.todayCollectedEnergy, (long)manager.totalCollectedEnergy, (unsigned long)records.count];
+                      getCurrentDateTimeString(), manager.enableAutoCollect ? @"开" : @"关", manager.enableSelfCollect ? @"开" : @"关", manager.enableAutoRain ? @"开" : @"关", manager.enableAutoEarn ? @"开" : @"关", manager.enableCleanOcean ? @"开" : @"关", manager.enableAutoOceanTasks ? @"开" : @"关", rewardDesc, manager.enableAutoAIFish ? @"开" : @"关", manager.enableAutoFarmTasks ? @"开" : @"关", manager.enableAutoManor ? @"开" : @"关", manager.enableAutoPatrolNew ? @"开" : @"关", manager.enableAutoRevive ? @"开" : @"关", manager.enableBackgroundLoop ? @"开" : @"关", (long)manager.collectInterval, manager.enableScheduledCollect ? @"开" : @"关", manager.enableWaterOnLaunch ? @"开" : @"关", manager.enableAutoWater ? @"开" : @"关", (long)manager.waterGrams, (unsigned long)manager.waterFriendIds.count, AFStepSimulator.shared.enabled ? @"开" : @"关", (long)manager.todayCollectedEnergy, (long)manager.totalCollectedEnergy, (unsigned long)records.count];
     NSMutableString *fullOutput = [NSMutableString stringWithString:header];
     if (records.count) {
         [fullOutput appendString:[records componentsJoinedByString:@"\n\n"]];
@@ -2149,6 +2397,7 @@ static void initializeManager(void) {
     manager.enableCleanOcean = [defaults objectForKey:@"enableCleanOcean"] ? [defaults boolForKey:@"enableCleanOcean"] : YES;
     manager.enableAutoOceanTasks = [defaults objectForKey:@"enableAutoOceanTasks"] ? [defaults boolForKey:@"enableAutoOceanTasks"] : YES;
     manager.enableAutoRewardTasks = [defaults objectForKey:@"enableAutoRewardTasks"] ? [defaults boolForKey:@"enableAutoRewardTasks"] : YES;
+    manager.rewardTaskStartTime = [defaults stringForKey:@"rewardTaskStartTime"] ?: @"07:00";
     manager.enableAutoAIFish = [defaults objectForKey:@"enableAutoAIFish"] ? [defaults boolForKey:@"enableAutoAIFish"] : YES;
     manager.enableAutoFarmTasks = [defaults objectForKey:@"enableAutoFarmTasks"] ? [defaults boolForKey:@"enableAutoFarmTasks"] : YES;
     manager.enableAutoManor = [defaults objectForKey:@"enableAutoManor"] ? [defaults boolForKey:@"enableAutoManor"] : YES;
@@ -2165,22 +2414,70 @@ static void initializeManager(void) {
     manager.waterFriendIds = [defaults arrayForKey:@"waterFriendIds"] ?: @[];
     manager.waterScheduledTimes = [defaults arrayForKey:@"waterScheduledTimes"] ?: @[];
     manager.collectInterval = MAX(1, [defaults integerForKey:@"backgroundIntervalMinutes"] ?: 5) * 60;
+    manager.bridgeProbeHandler = ^{
+        probeAndRestoreForestBridge();
+    };
+    probeAndRestoreForestBridge();
     [manager recordStage:[NSString stringWithFormat:@"诊断 · 初始化：自动=%d，循环=%d", manager.enableAutoCollect, manager.enableBackgroundLoop]];
     if (manager.enableAutoCollect && manager.enableBackgroundLoop) [manager startAutoCollectTimerWithInterval:manager.collectInterval];
     if (manager.enableAutoCollect && manager.enableScheduledCollect) [manager startScheduledCollectTimer];
     if (manager.enableAutoWater) [manager startScheduledWaterTimer];
 }
 
+static BOOL isSilentTransitTaskURL(NSURL *url) {
+    if (!url) return NO;
+    NSString *urlStr = [url.absoluteString lowercaseString];
+    return [urlStr containsString:@"starlink"] ||
+           [urlStr containsString:@"market.m.taobao.com"] ||
+           [urlStr containsString:@"taobao.com"] ||
+           [urlStr containsString:@"tmall.com"] ||
+           [urlStr containsString:@"tb.cn"] ||
+           [urlStr containsString:@"wakeup-transit"] ||
+           [urlStr containsString:@"taobaoqiandao"] ||
+           [urlStr containsString:@"qiandao"] ||
+           [urlStr containsString:@"daoliu"];
+}
+
 static void portViewDidLoad(id self, SEL _cmd) {
     originalViewDidLoad(self, _cmd);
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{ initializeManager(); });
+    NSURL *url = urlFromController(self);
+    NSTimeInterval lastTrigger = [AntForestManager sharedInstance].lastSilentTaskTransitTimestamp;
+    BOOL isRecentSilent = (lastTrigger > 0 && [[NSDate date] timeIntervalSince1970] - lastTrigger < 10.0);
+    if (isRecentSilent && isSilentTransitTaskURL(url)) {
+        if ([self respondsToSelector:@selector(view)]) {
+            UIView *v = [self view];
+            v.alpha = 0.001;
+            v.hidden = YES;
+        }
+    }
 }
 
 static void portViewDidAppear(id self, SEL _cmd, BOOL animated) {
     originalViewDidAppear(self, _cmd, animated);
     [[AFStepSimulator shared] installAvailableHooks];
     NSURL *url = urlFromController(self);
+    
+    // 静默外链任务（如淘宝签到星链唤端中间页）：在真实端内容器全透明静默加载，并在完成鉴权归因后自动无感关闭
+    NSTimeInterval lastTrigger = [AntForestManager sharedInstance].lastSilentTaskTransitTimestamp;
+    BOOL isRecentSilent = (lastTrigger > 0 && [[NSDate date] timeIntervalSince1970] - lastTrigger < 10.0);
+    if (isRecentSilent && isSilentTransitTaskURL(url)) {
+        if ([self respondsToSelector:@selector(view)]) {
+            UIView *v = [self view];
+            v.alpha = 0.001;
+            v.hidden = YES;
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if ([self respondsToSelector:@selector(navigationController)] && [self navigationController]) {
+                [[self navigationController] popViewControllerAnimated:NO];
+            } else if ([self respondsToSelector:@selector(dismissViewControllerAnimated:completion:)]) {
+                [self dismissViewControllerAnimated:NO completion:nil];
+            }
+        });
+        return;
+    }
+
     AntForestManager *manager = [AntForestManager sharedInstance];
     
     // 第一优先级：能量雨快速判定并彻底返回，绝不执行任何森林首页、巡护、寻宝逻辑
@@ -2190,6 +2487,13 @@ static void portViewDidAppear(id self, SEL _cmd, BOOL animated) {
                 installEnergyRainCollector(self);
             });
         }
+        addLogButton(self, NO);
+        return;
+    }
+
+    // 1v1能量挑战 / PK挑战赛子页面隔离保护：绝不绑定或污染森林首页/任务 Bridge，直接返回
+    if (isPkOrChallengeURL(url)) {
+        manager.lastPkInteractionTime = [[NSDate date] timeIntervalSince1970];
         addLogButton(self, NO);
         return;
     }
@@ -2306,6 +2610,16 @@ static void portViewDidAppear(id self, SEL _cmd, BOOL animated) {
                 [manager queryOceanTaskListWithForce:YES];
             });
         }
+        if (manager.enableCleanOcean) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(800 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+                [manager cleanMyOceanThoroughly];
+                [manager queryOceanFriendList];
+                NSMutableOrderedSet *candidateFriends = [NSMutableOrderedSet orderedSet];
+                if (manager.friendsRank.allKeys.count) [candidateFriends addObjectsFromArray:manager.friendsRank.allKeys];
+                if (manager.friendsName.allKeys.count) [candidateFriends addObjectsFromArray:manager.friendsName.allKeys];
+                if (candidateFriends.count) [manager scanOceanForFriends:candidateFriends.array];
+            });
+        }
     }
     if (isAIFishURL(url)) {
         id bridge = rewardBridgeFromController(self) ?: forestBridgeFromController(self);
@@ -2333,18 +2647,20 @@ static void portViewDidAppear(id self, SEL _cmd, BOOL animated) {
                 [manager openFarmTaskPanelOnWebView];
                 [manager claimAllVisibleFarmRewardsOnWebView];
             });
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-                [manager openFarmTaskPanelOnWebView];
-                [manager claimAllVisibleFarmRewardsOnWebView];
-            });
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-                [manager openFarmTaskPanelOnWebView];
-                [manager claimAllVisibleFarmRewardsOnWebView];
-            });
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-                [manager claimAllVisibleFarmRewardsOnWebView];
-            });
         }
+    }
+    if ([AntForestManager isManorURL:url] && manager.enableAutoManor) {
+        id bridge = rewardBridgeFromController(self) ?: forestBridgeFromController(self);
+        if (bridge && [bridge respondsToSelector:@selector(_doFlushMessageQueue:url:)]) {
+            if (manager.manorBridge != bridge) {
+                manager.manorBridge = bridge;
+                manager.manorH5Url = url.absoluteString;
+                [manager recordStage:@"蚂蚁庄园：进入庄园，已就绪 Bridge，开始自动体检与任务调度..."];
+            }
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+            [manager checkAndRunManorAutomations];
+        });
     }
     addLogButton(self, revealLeaf);
 }
@@ -2408,10 +2724,43 @@ static id portCallRPC(id self, SEL _cmd, id rpcConfig, id completeBlock) {
         }
         if (!str) str = [rpcConfig description];
         
+        NSString *opType = nil;
+        id reqDataObj = nil;
+        if ([rpcConfig isKindOfClass:NSDictionary.class]) {
+            opType = rpcConfig[@"operationType"];
+            reqDataObj = rpcConfig[@"requestData"];
+        } else {
+            @try {
+                id val = [rpcConfig valueForKey:@"operationType"];
+                if ([val isKindOfClass:NSString.class]) opType = val;
+            } @catch (NSException *e) {}
+            @try {
+                reqDataObj = [rpcConfig valueForKey:@"requestData"];
+            } @catch (NSException *e) {}
+        }
+        
+        NSString *reqDataStr = nil;
+        if ([NSJSONSerialization isValidJSONObject:reqDataObj]) {
+            NSData *d = [NSJSONSerialization dataWithJSONObject:reqDataObj options:0 error:nil];
+            if (d) reqDataStr = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+        } else if (reqDataObj) {
+            reqDataStr = [reqDataObj description];
+        }
+        
+        if (opType.length && reqDataStr.length && (!str.length || [str containsString:@"<"])) {
+            str = [NSString stringWithFormat:@"{\"operationType\":\"%@\",\"requestData\":%@}", opType, reqDataStr];
+        }
+        
+#if ENABLE_PROBE_LOGS
         if (str.length && !isNoiseProbeLog(str)) {
             AFProbeLog(@"\n🔍 [PatrolProbe-RPC-REQ]\n📦 %@", str);
             [[AntForestManager sharedInstance] recordProbeLog:[NSString stringWithFormat:@"[RPC-REQ] %@", str]];
+            
+            NSString *preview = (reqDataStr ?: str);
+            if (preview.length > 500) preview = [preview substringToIndex:500];
+            [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"🎯 探针·请求方法：%@\n入参：%@", opType ?: @"-", preview]];
         }
+#endif
     } @catch (NSException *e) {}
     
     IMP original = NULL;
@@ -2425,12 +2774,125 @@ static id portCallRPC(id self, SEL _cmd, id rpcConfig, id completeBlock) {
 }
 
 static BOOL hookRPCProbeMethod(Class cls) {
+#if !ENABLE_PROBE_LOGS
     return NO;
+#else
+    SEL selector = @selector(callRPC:completeBlock:);
+    unsigned int methodCount = 0;
+    Method *methods = class_copyMethodList(cls, &methodCount);
+    Method target = NULL;
+    for (unsigned int i = 0; i < methodCount; i++) {
+        if (method_getName(methods[i]) == selector) { target = methods[i]; break; }
+    }
+    if (!target || method_getImplementation(target) == (IMP)portCallRPC) {
+        if (methods) free(methods);
+        return NO;
+    }
+    IMP original = method_getImplementation(target);
+    objc_setAssociatedObject(cls, PortRPCOriginalIMPKey, [NSValue valueWithPointer:original], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    method_setImplementation(target, (IMP)portCallRPC);
+    if (methods) free(methods);
+    return YES;
+#endif
 }
 
-
-
 static NSString *gLastRpcOperationType = nil;
+static void (*originalDoFlushMessageQueue)(id, SEL, id, id);
+static void portDoFlushMessageQueue(id self, SEL _cmd, id msg, id url) {
+    @try {
+        NSString *urlStr = [url isKindOfClass:NSString.class] ? url : ([url respondsToSelector:@selector(absoluteString)] ? [url absoluteString] : @"");
+        NSString *msgStr = nil;
+        if ([msg isKindOfClass:NSString.class]) {
+            msgStr = msg;
+        } else if ([NSJSONSerialization isValidJSONObject:msg]) {
+            NSData *d = [NSJSONSerialization dataWithJSONObject:msg options:0 error:nil];
+            if (d) msgStr = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+        }
+        if (!msgStr) msgStr = [msg description];
+        
+        if (msgStr.length) {
+            static NSRegularExpression *opRegex = nil;
+            static dispatch_once_t onceToken;
+            dispatch_once(&onceToken, ^{
+                opRegex = [NSRegularExpression regularExpressionWithPattern:@"\"operationType\"\\s*:\\s*\"([^\"]+)\"" options:0 error:nil];
+            });
+            NSTextCheckingResult *match = [opRegex firstMatchInString:msgStr options:0 range:NSMakeRange(0, msgStr.length)];
+            if (match && match.numberOfRanges > 1) {
+                NSString *extractedOp = [msgStr substringWithRange:[match rangeAtIndex:1]];
+                if (extractedOp.length) {
+                    gLastRpcOperationType = [extractedOp copy];
+                    [AntForestManager sharedInstance].lastRpcOperationType = [extractedOp copy];
+                    if (isStrictPkOperationName(extractedOp)) {
+                        [AntForestManager sharedInstance].lastPkInteractionTime = [[NSDate date] timeIntervalSince1970];
+                    }
+                }
+            }
+            
+            // 神奇海洋：精准捕获正在清理的海域目标用户ID（好友海域 vs 个人海域）
+            if ([msgStr containsString:@"cleanFriendOcean"] || [msgStr containsString:@"cleanedUserId"]) {
+                static NSRegularExpression *userRegex = nil;
+                static dispatch_once_t uToken;
+                dispatch_once(&uToken, ^{
+                    userRegex = [NSRegularExpression regularExpressionWithPattern:@"\"(?:cleanedUserId|userId)\"\\s*:\\s*\"([^\"]+)\"" options:0 error:nil];
+                });
+                NSTextCheckingResult *uMatch = [userRegex firstMatchInString:msgStr options:0 range:NSMakeRange(0, msgStr.length)];
+                NSString *u = (uMatch && uMatch.numberOfRanges > 1) ? [msgStr substringWithRange:[uMatch rangeAtIndex:1]] : nil;
+                if (!u.length || [u isEqualToString:[AntForestManager sharedInstance].myUserId]) {
+                    static NSRegularExpression *urlUserRegex = nil;
+                    static dispatch_once_t urlUToken;
+                    dispatch_once(&urlUToken, ^{
+                        urlUserRegex = [NSRegularExpression regularExpressionWithPattern:@"[?&]userId=([^&#]+)" options:0 error:nil];
+                    });
+                    NSTextCheckingResult *urlMatch = [urlUserRegex firstMatchInString:urlStr options:0 range:NSMakeRange(0, urlStr.length)];
+                    if (urlMatch && urlMatch.numberOfRanges > 1) {
+                        NSString *urlUid = [urlStr substringWithRange:[urlMatch rangeAtIndex:1]];
+                        if (urlUid.length && ![urlUid isEqualToString:[AntForestManager sharedInstance].myUserId]) {
+                            u = urlUid;
+                        }
+                    }
+                }
+                if (u.length) {
+                    [AntForestManager sharedInstance].lastCleanedOceanUserId = u;
+                }
+            } else if ([msgStr containsString:@"cleanOcean"]) {
+                NSString *u = nil;
+                if ([urlStr containsString:@"userId="]) {
+                    static NSRegularExpression *urlUserRegex = nil;
+                    static dispatch_once_t urlUToken;
+                    dispatch_once(&urlUToken, ^{
+                        urlUserRegex = [NSRegularExpression regularExpressionWithPattern:@"[?&]userId=([^&#]+)" options:0 error:nil];
+                    });
+                    NSTextCheckingResult *urlMatch = [urlUserRegex firstMatchInString:urlStr options:0 range:NSMakeRange(0, urlStr.length)];
+                    if (urlMatch && urlMatch.numberOfRanges > 1) {
+                        NSString *urlUid = [urlStr substringWithRange:[urlMatch rangeAtIndex:1]];
+                        if (urlUid.length && ![urlUid isEqualToString:[AntForestManager sharedInstance].myUserId]) {
+                            u = urlUid;
+                        }
+                    }
+                }
+                if (u.length) {
+                    [AntForestManager sharedInstance].lastCleanedOceanUserId = u;
+                } else {
+                    [AntForestManager sharedInstance].lastCleanedOceanUserId = [AntForestManager sharedInstance].myUserId;
+                }
+            }
+        }
+        
+#if ENABLE_PROBE_LOGS
+        if (msgStr.length && !isNoiseProbeLog(msgStr)) {
+            AFProbeLog(@"\n🔍 [PatrolProbe-REQ]\n📍 URL: %@\n📦 Request: %@\n", urlStr, msgStr);
+            [[AntForestManager sharedInstance] recordProbeLog:[NSString stringWithFormat:@"[REQ] URL: %@\nData: %@", urlStr, msgStr]];
+            
+            NSString *preview = msgStr.length > 500 ? [msgStr substringToIndex:500] : msgStr;
+            [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"🎯 探针·JSBridge调用：\n%@", preview]];
+        }
+#endif
+    } @catch (NSException *e) {}
+    
+    if (originalDoFlushMessageQueue) {
+        originalDoFlushMessageQueue(self, _cmd, msg, url);
+    }
+}
 
 static id portTransformResponseData(id self, SEL _cmd, id value) {
     id controller = forestControllerForBridge(self);
@@ -2441,52 +2903,95 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
         return value;
     }
 
+#if ENABLE_PROBE_LOGS
+    @try {
+        NSString *resStr = nil;
+        if ([NSJSONSerialization isValidJSONObject:value]) {
+            NSData *d = [NSJSONSerialization dataWithJSONObject:value options:0 error:nil];
+            if (d) resStr = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+        }
+        if (!resStr) resStr = [value description];
+        
+        if (resStr.length && !isNoiseProbeLog(resStr)) {
+            [[AntForestManager sharedInstance] recordProbeLog:[NSString stringWithFormat:@"[RES] %@", resStr]];
+            
+            NSString *preview = resStr.length > 500 ? [resStr substringToIndex:500] : resStr;
+            [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"🎯 探针·服务端RPC回包：\n%@", preview]];
+        }
+    } @catch (NSException *e) {}
+#endif
+
     AntForestManager *manager = [AntForestManager sharedInstance];
     NSDictionary *dict = [value isKindOfClass:NSDictionary.class] ? value : nil;
     NSDictionary *resData = [dict[@"resData"] isKindOfClass:NSDictionary.class] ? dict[@"resData"] : nil;
 
     NSURL *ctrlUrl = [controller respondsToSelector:@selector(url)] ? [controller url] : nil;
+    if (!ctrlUrl) {
+        NSString *bridgeUrlStr = [manager effectiveUrlForBridge:self];
+        if (bridgeUrlStr.length) ctrlUrl = [NSURL URLWithString:bridgeUrlStr];
+    }
 
-    // 1. 庄园与农场特征检测优先判定，避免森林 Bridge 缓存误判
+    // 0. 1v1能量挑战 (pvpHome.html) / PK排位赛独立子页面绝对隔离保护：
+    // 该页面初始化时会并发请求 queryPvpHomeInfo 与 com.alipay.antiep.listTask(ANTFOREST_VITALITY_TASK)，
+    // 若不隔离会导致插件将 pvpHome.html 的 Bridge 误绑为 rewardTaskBridge/jsBridge 并在其上狂发森林任务 RPC，导致卡在“稍等片刻...”！
+    if (ctrlUrl && isPkOrChallengeURL(ctrlUrl)) {
+        manager.lastPkInteractionTime = [[NSDate date] timeIntervalSince1970];
+        if (manager.rewardTaskBridge == self) {
+            manager.rewardTaskBridge = manager.jsBridge;
+        }
+        if (originalTransformResponseData) {
+            return originalTransformResponseData(self, _cmd, value);
+        }
+        return value;
+    }
+
+    // 1. URL与Bridge上下文特征探测
+    BOOL isForestByUrl = ctrlUrl && isForestHomeURL(ctrlUrl);
+    BOOL isKnownForestBridge = (manager.jsBridge == self);
     BOOL isManorByUrl = ctrlUrl && [AntForestManager isManorURL:ctrlUrl];
-    BOOL isManorByData = [AntForestManager isManorResponse:value];
-    BOOL isManor = isManorByUrl || isManorByData || (manager.manorBridge == self);
-
     BOOL isFarmByUrl = ctrlUrl && isFarmURL(ctrlUrl);
-    BOOL isFarmByData = (resData[@"limitedTimeChallenge"] || dict[@"limitedTimeChallenge"] ||
-                         resData[@"taskList"] || dict[@"taskList"] ||
-                         resData[@"manureFactory"] || dict[@"manureFactory"] ||
-                         resData[@"signTaskInfo"] || dict[@"signTaskInfo"] ||
-                         resData[@"balloonCooper"] || dict[@"balloonCooper"] ||
-                         resData[@"helpFarmChannelConfig"] || dict[@"helpFarmChannelConfig"] ||
-                         resData[@"subplotsActivityList"] || dict[@"subplotsActivityList"] ||
-                         resData[@"indexDeliveryList"] || dict[@"indexDeliveryList"]);
-    BOOL isFarmResp = !isManor && (isFarmByUrl || isFarmByData || (manager.farmBridge == self));
 
-    // 2. 森林判定：只有在明确不是庄园且不是农场的前提下，才判定为森林
+    // 森林首页绝对优先保护：若是森林首页URL或已绑定的森林首页Bridge（且未发生向庄园/农场的明确跳转），100%锁定为森林，绝不被农场/庄园判定截胡！
     BOOL isForest = NO;
-    if (!isManor && !isFarmResp) {
-        isForest = isForestResponse(value) || (ctrlUrl && isForestHomeURL(ctrlUrl));
-        if (!isForest && manager.jsBridge == self) {
+    if (isForestByUrl || (isKnownForestBridge && !isManorByUrl && !isFarmByUrl) || isForestResponse(value)) {
+        if (!isManorByUrl && !isFarmByUrl) {
             isForest = YES;
         }
     }
 
+    BOOL isManor = NO;
+    BOOL isFarmResp = NO;
+
     if (isForest) {
         if (manager.manorBridge == self) manager.manorBridge = nil;
         if (manager.farmBridge == self) manager.farmBridge = nil;
-    } else if (isFarmResp) {
-        if (manager.manorBridge == self) manager.manorBridge = nil;
-    } else if (isManor) {
-        if (manager.farmBridge == self) manager.farmBridge = nil;
-        if (manager.jsBridge == self) manager.jsBridge = nil;
+        if (manager.oceanBridge == self) manager.oceanBridge = nil;
+    } else {
+        // 仅在明确不是森林的场景下，才判定庄园与农场
+        BOOL isManorByData = [AntForestManager isManorResponse:value];
+        isManor = isManorByUrl || isManorByData || (manager.manorBridge == self);
+
+        BOOL isFarmByData = (resData[@"manureFactory"] || dict[@"manureFactory"] ||
+                             resData[@"signTaskInfo"] || dict[@"signTaskInfo"] ||
+                             resData[@"balloonCooper"] || dict[@"balloonCooper"] ||
+                             resData[@"helpFarmChannelConfig"] || dict[@"helpFarmChannelConfig"] ||
+                             resData[@"subplotsActivityList"] || dict[@"subplotsActivityList"] ||
+                             resData[@"indexDeliveryList"] || dict[@"indexDeliveryList"] ||
+                             ((isFarmByUrl || manager.farmBridge == self) && (resData[@"taskList"] || dict[@"taskList"] || resData[@"limitedTimeChallenge"] || dict[@"limitedTimeChallenge"])));
+        isFarmResp = !isManor && (isFarmByUrl || isFarmByData || (manager.farmBridge == self));
+
+        if (isFarmResp) {
+            if (manager.manorBridge == self) manager.manorBridge = nil;
+        } else if (isManor) {
+            if (manager.farmBridge == self) manager.farmBridge = nil;
+        }
     }
 
     if (isForest) {
-        if (ctrlUrl && isForestHomeURL(ctrlUrl)) {
+        if (ctrlUrl && isSelfForestHomeURL(ctrlUrl)) {
             if (manager.jsBridge != self) {
                 manager.jsBridge = self;
-                [manager recordStage:@"诊断 · 已绑定森林响应 H5 Bridge"];
+                [manager recordStage:@"诊断 · 已绑定森林首页 H5 Bridge"];
             }
         }
     }
@@ -2508,9 +3013,6 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
         }
         if (isManor && manager.enableAutoManor) {
             // ManorProbe-RPC-REQ: 庄园自动化由 handleManorResponse 与静默 RPC 驱动
-            if (manager.jsBridge == self) {
-                manager.jsBridge = nil;
-            }
             BOOL isFirstBind = (manager.manorBridge != self);
             if (isFirstBind) {
                 manager.manorBridge = self;
@@ -2521,7 +3023,8 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
             }
             [manager handleManorResponse:dict ?: resData];
         }
-        if (resData[@"antOceanTaskVOList"] || [dict[@"antOceanTaskVOList"] isKindOfClass:NSArray.class]) {
+        BOOL isOceanResp = !isForest && self != manager.jsBridge && (isOceanURL(ctrlUrl) || (ctrlUrl && [ctrlUrl.absoluteString containsString:@"2021003115672468"]));
+        if (isOceanResp && (resData[@"antOceanTaskVOList"] || [dict[@"antOceanTaskVOList"] isKindOfClass:NSArray.class] || [gLastRpcOperationType containsString:@"antocean"])) {
             if (manager.oceanBridge != self) {
                 manager.oceanBridge = self;
                 [manager recordStage:@"神奇海洋 · 已绑定海洋 H5 Bridge"];
@@ -2543,9 +3046,9 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
             }
         }
         NSArray *taskInfoList = [resData[@"taskInfoList"] isKindOfClass:NSArray.class] ? resData[@"taskInfoList"] : ([dict[@"taskInfoList"] isKindOfClass:NSArray.class] ? dict[@"taskInfoList"] : nil);
-        if (resData[@"forestTasksNew"] || taskInfoList || resData[@"drawAsset"] || resData[@"drawEntranceVO"] || resData[@"drawActivity"] || resData[@"drawPrize"] || resData[@"drawPrizes"] || [dict[@"currentSeasonInfo"] isKindOfClass:NSDictionary.class]) {
+        if (resData[@"forestTasksNew"] || taskInfoList || resData[@"drawAsset"] || resData[@"drawEntranceVO"] || resData[@"drawActivity"] || resData[@"drawPrize"] || resData[@"drawPrizes"]) {
             BOOL isMonopoly = (manager.monopolyBridge == self);
-            BOOL isAIFish = (manager.aiFishBridge == self) || [dict[@"currentSeasonInfo"] isKindOfClass:NSDictionary.class];
+            BOOL isAIFish = (manager.aiFishBridge == self && self != manager.jsBridge);
             BOOL isOcean = (manager.oceanBridge == self);
             BOOL isFarm = (manager.farmBridge == self);
             BOOL isLottery = (manager.lotteryBridge == self);
@@ -2555,7 +3058,9 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
                     if ([sc containsString:@"MONOPOLY"] || [sc containsString:@"HSDWY"]) {
                         isMonopoly = YES;
                     } else if ([sc containsString:@"AIFISH"]) {
-                        isAIFish = YES;
+                        if (!isForest && self != manager.jsBridge) {
+                            isAIFish = YES;
+                        }
                     } else if ([sc containsString:@"OCEAN"]) {
                         isOcean = YES;
                     } else if ([sc containsString:@"FARM"] || [sc containsString:@"ORCHARD"] || [sc isEqualToString:@"10021"] || [sc isEqualToString:@"3646"] || [sc hasPrefix:@"BABA_"]) {
@@ -2578,10 +3083,10 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
                 }
                 manager.monopolyDrawerOpened = YES;
             }
-            if (isAIFish) {
+            if (isAIFish && !isForest && self != manager.jsBridge) {
                 manager.aiFishBridge = self;
             }
-            if (isOcean) {
+            if (isOcean && !isForest && self != manager.jsBridge) {
                 manager.oceanBridge = self;
             }
             if (isFarm && !isManor && !isForest) {
@@ -2590,9 +3095,11 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
             if (isLottery) {
                 manager.lotteryBridge = self;
             }
-            if (!isMonopoly && !isAIFish && !isOcean && !isFarm && !isLottery && !isManor && !isForest) {
-                if (manager.rewardTaskBridge != self) {
-                    manager.rewardTaskBridge = self;
+            if (!isMonopoly && !isAIFish && !isOcean && !isFarm && !isLottery && !isManor) {
+                if (!ctrlUrl || isSelfForestHomeURL(ctrlUrl) || isRewardTaskURL(ctrlUrl)) {
+                    if (manager.rewardTaskBridge != self) {
+                        manager.rewardTaskBridge = self;
+                    }
                 }
             }
         }
@@ -2601,8 +3108,28 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
         [manager matchFriendIdAndBubbles:value];
     }
     if (manager.enableAutoCollect && manager.enableSelfCollect && isMyHomeResponse(value, manager)) {
+        manager.lastPkInteractionTime = 0;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(700 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ tryAutoCollectWaterGift(); });
     }
+    
+    // 隔离插件后台静默发起的非用户点击请求（精准匹配 af_silent_ 唯一前缀）：
+    // 1. 绝不拦截用户手动点击的榜单（用户的 callbackId 是前端生成的，无 af_silent_ 前缀，100% 透传完整 totalDatas）；
+    // 2. 插件后台发起的静默请求（如 queryFriendsBubbles、takeLook、queryTotalRank 等）若透传给前端，会导致 H5 收到 nextAction="Friend" 误判为已离开首页，从而卸载/死锁首页排行榜；
+    // 对 af_silent_ 前缀的后台回包，返回纯净的空成功回包，切断对 H5 视图路由的跨页面污染。
+    NSString *respId = dict[@"responseId"] ?: dict[@"callbackId"];
+    if (respId.length && [respId containsString:@"af_silent_"]) {
+        NSMutableDictionary *safeResp = [NSMutableDictionary dictionary];
+        safeResp[@"resultStatus"] = @1000;
+        safeResp[@"resultCode"] = @"SUCCESS";
+        safeResp[@"success"] = @YES;
+        safeResp[@"resData"] = @{@"success": @YES, @"resultCode": @"SUCCESS"};
+        safeResp[@"responseId"] = respId;
+        if (originalTransformResponseData) {
+            return originalTransformResponseData(self, _cmd, safeResp);
+        }
+        return safeResp;
+    }
+    
     if (originalTransformResponseData) {
         return originalTransformResponseData(self, _cmd, value);
     }
@@ -2695,6 +3222,7 @@ static void installHooks(void) {
         if (targetBridgeClass) {
             hookMethod(targetBridgeClass, @selector(transformResponseData:), (IMP)portTransformResponseData, (IMP *)&originalTransformResponseData);
             hookMethod(targetBridgeClass, @selector(updateBridgeReadyStatus:), (IMP)portUpdateBridgeReadyStatus, (IMP *)&originalUpdateBridgeReadyStatus);
+            hookMethod(targetBridgeClass, @selector(_doFlushMessageQueue:url:), (IMP)portDoFlushMessageQueue, (IMP *)&originalDoFlushMessageQueue);
         }
         
         int classCount = objc_getClassList(NULL, 0);

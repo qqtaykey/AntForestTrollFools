@@ -13,16 +13,19 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface AntForestManager : NSObject
+@interface AntForestManager : NSObject <WKNavigationDelegate>
 
 +(AntForestManager *)sharedInstance;
 + (NSLock*)sharedLock;
 + (NSString *)extractNameFromDictionary:(NSDictionary *)dict;
 + (NSString *)extractUserIdFromDictionary:(NSDictionary *)dict;
 
-@property(nonatomic,strong) PSDJsBridge* jsBridge;
+@property(nonatomic,strong,nullable) PSDJsBridge* jsBridge;
 // 领奖励/寻宝页专用桥接；若未独立打开则兜底复用森林首页桥接。
-@property(nonatomic,strong) PSDJsBridge* rewardTaskBridge;
+@property(nonatomic,strong,nullable) PSDJsBridge* rewardTaskBridge;
+@property(nonatomic,copy) NSString* rewardTaskH5Url;
+@property(nonatomic,copy,nullable) void (^bridgeProbeHandler)(void);
+-(void)probeAndRestoreBridges;
 @property(nonatomic,strong,nullable) WKWebView *silentBrowseWebView;
 @property(nonatomic,strong) NSMutableDictionary *friendsBubbles; //存储的是未到时间的能量球
 @property(nonatomic,strong) NSMutableDictionary *friendsName; //
@@ -32,7 +35,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(atomic) NSInteger todayCollectedEnergy;
 
 @property (nonatomic, strong) NSTimer *autoCollectTimer; //后台任务定时器
-@property(nonatomic, copy) NSString *lastCleanedOceanUserId;
+@property(nonatomic, copy, nullable) NSString *lastCleanedOceanUserId;
 @property (nonatomic, strong) NSTimer *scheduledCollectTimer;
 @property (nonatomic, strong) NSTimer *scheduledWaterTimer;
 
@@ -67,6 +70,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (assign, nonatomic) BOOL enableAutoPatrol; // 旧版保护地自动巡护与物种合成派遣
 @property (assign, nonatomic) BOOL enableAutoPatrolNew; // 新版保护地大富翁自动掷骰子与任务
 @property (assign, nonatomic) BOOL enableAutoRewardTasks; // 任务中心自动签到、做任务与领奖励
+@property (nonatomic, copy) NSString *rewardTaskStartTime; // 领奖励等日常任务每日开始时间，格式 HH:mm，默认 @"07:00"
 @property (assign, nonatomic) BOOL enableAutoAIFish; // AI摸鱼自动任务与摸鱼次数
 @property (assign, nonatomic) BOOL enableAutoFarmTasks; // 芭芭农场做任务集肥料与小鸡肥料自动领取
 @property (assign, nonatomic) BOOL enableAutoManor; // 蚂蚁庄园全自动日常（签到、小课堂答题、领饲料、喂小鸡与收肥料）
@@ -80,11 +84,16 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *lastManorManureCollectDate; // 最近一次收取小鸡肥料的日期
 @property (nonatomic) BOOL manorTaskPanelOpened; // 是否已打开领饲料面板
 @property (atomic, assign) BOOL isScanRunning; // 扫描进行中独占锁
+@property (atomic, assign) NSTimeInterval lastScanStartTime; // 本轮扫描启动时间戳（用于超时熔断）
 @property (assign, nonatomic) int failedTimes; //未成功收取能量的次数
 @property(atomic) NSTimeInterval collectInterval; //takeLook时间间隔
 
 @property (strong, nonatomic) NSString* myUserId; //我自己的ID
 @property (nonatomic, copy) NSString *lastRpcOperationType; // 最近一次发起的 RPC operationType
+@property (nonatomic, copy, nullable) NSString *lastSilentRankCallbackId; // 最近一次后台发起的静默排行榜 callbackId
+@property (nonatomic, assign) NSInteger lastRankFetchedIndex; // 最近一次拉取的排行榜分页游标
+@property (nonatomic, assign) NSTimeInterval lastSilentTaskTransitTimestamp; // 最近一次静默打开外链任务的时间戳
+@property (nonatomic, assign) NSTimeInterval lastPkInteractionTime; // 最近一次用户交互PK榜的时间戳
 
 -(BOOL)isAnimalEnergyCollectedTodayForCode:(NSString *)code name:(NSString *)name;
 -(void)markAnimalEnergyCollectedTodayForCode:(NSString *)code name:(NSString *)name reason:(NSString *)reason;
@@ -144,10 +153,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 -(void)takeLook;
 -(void)queryFriendsBubbles:(NSString*)friendId;
+-(void)safeFlushBridge:(id)bridge message:(NSString *)msg url:(NSString *)url;
 -(void)queryMyBubbles;
 -(void)collectBubbles:(NSString*)uid bubblesId:(NSString*)bids;
 -(void)reviveEnergy:(NSString*)uid signId:(NSString*)signId; //貌似查询
 -(void)autoCollectBubbles;
+-(void)autoCollectBubblesWithRush:(BOOL)isRush;
 -(void)matchFriendIdAndBubbles:(id)args;
 -(void)recordCollectedEnergyFromResponse:(id)args;
 -(NSString*)getUserName:(NSString*)uid;
@@ -165,11 +176,13 @@ NS_ASSUME_NONNULL_BEGIN
 -(void)queryMonopolyTaskList;
 -(void)queryMonopolyTaskListWithForce:(BOOL)force;
 -(void)executeMonopolyScriptOnWebView:(NSString *)js;
+-(nullable NSString *)effectiveUrlForBridge:(nullable id)bridge;
 -(void)registerBridge:(id)bridge withUrl:(NSString *)url;
 -(void)checkAndTriggerPageActionsForUrl:(NSString *)urlStr;
 -(void)openMonopolyTaskPanelOnWebView;
 -(void)handleVitalityTaskListResponse:(id)args;
 -(void)signVitalityTask:(NSString *)signId;
+-(void)signVitalityTask:(NSString *)signId sceneCode:(NSString *)sceneCode;
 -(void)finishVitalityTask:(NSString *)taskType sceneCode:(NSString *)sceneCode taskTitle:(NSString *)title;
 -(void)notifyActiveH5PageToRefresh;
 -(void)receiveVitalityTaskAward:(NSString *)taskType sceneCode:(NSString *)sceneCode taskTitle:(NSString *)title awardName:(NSString *)awardName;
